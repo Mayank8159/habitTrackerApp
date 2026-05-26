@@ -1,0 +1,77 @@
+name: Build Android APK and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to use (example: v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate Expo token
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Missing EXPO_TOKEN secret. Add it in GitHub repo settings."
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Expo and EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build Android APK (EAS)
+        id: eas_build
+        run: |
+          eas build --platform android --profile preview --non-interactive --wait --json > eas-build.json
+          node -e "const fs=require('fs');const raw=fs.readFileSync('eas-build.json','utf8');const data=JSON.parse(raw);const build=Array.isArray(data)?data[0]:data;const url=build&&build.artifacts&&build.artifacts.buildUrl;if(!url){console.error('No buildUrl found in EAS output');console.error(JSON.stringify(data,null,2));process.exit(1);}const id=build.id||'';fs.appendFileSync(process.env.GITHUB_OUTPUT,`apk_url=${url}\\nbuild_id=${id}\\n`);"
+
+      - name: Download APK
+        run: |
+          mkdir -p release-assets
+          curl -L "${{ steps.eas_build.outputs.apk_url }}" -o "release-assets/habitsapp-${{ steps.tag.outputs.value }}.apk"
+
+      - name: Create GitHub release and upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          generate_release_notes: true
+          files: release-assets/*.apk
+          body: |
+            Android APK built via GitHub Actions and EAS Build.
+            EAS build ID: ${{ steps.eas_build.outputs.build_id }}

@@ -264,7 +264,12 @@ function HabitCard({ habit, selected, onSelect }: { habit: Habit; selected: bool
 			onPress={onSelect}
 			onPressIn={motion.onPressIn}
 			onPressOut={motion.onPressOut}
-			style={[styles.cardShell, selected && styles.cardSelected, motion.animatedStyle]}
+			style={[
+				styles.cardShell,
+				selected && styles.cardSelected,
+				selected && { borderColor: habit.colors[0], shadowColor: habit.colors[0] },
+				motion.animatedStyle,
+			]}
 		>
 			<View style={[styles.cardAccent, { backgroundColor: habit.colors[0] }]} />
 			<View style={styles.cardInner}>
@@ -279,6 +284,12 @@ function HabitCard({ habit, selected, onSelect }: { habit: Habit; selected: bool
 						</Text>
 					</View>
 				</View>
+
+				{selected ? (
+					<View style={[styles.selectedBadge, { backgroundColor: habit.colors[0] }]}>
+						<Text style={styles.selectedBadgeText}>Selected</Text>
+					</View>
+				) : null}
 
 				<View style={styles.gridMini}>
 					{grid.map((cell, index) => (
@@ -488,7 +499,7 @@ export default function HabitApp() {
 		}).start();
 	}, [screenMotion, session]);
 
-	const selectedHabit = habits.find((habit) => habit.id === selectedHabitId) ?? habits[0] ?? null;
+	const selectedHabit = selectedHabitId ? habits.find((habit) => habit.id === selectedHabitId) ?? null : null;
 	const activeTodayCount = habits.filter((habit) => habit.completedToday).length;
 	const averageStreak = habits.length
 		? Math.round(habits.reduce((total, habit) => total + habit.streak, 0) / habits.length)
@@ -708,15 +719,7 @@ export default function HabitApp() {
 						pointerEvents={transitioning ? 'none' : 'auto'}
 					>
 						<ScrollView contentContainerStyle={styles.authContent} showsVerticalScrollIndicator={false}>
-						<View style={styles.brandRow}>
-							<View style={styles.brandMark}>
-								<LucideIcon style={styles.icon} name="Sparkles" size={22} color={GEMINI.accentSoft} strokeWidth={2.4} />
-							</View>
-							<View>
-								<Text style={styles.brandName}>Habit Desk</Text>
-								<Text style={styles.brandSubtext}>Gemini-inspired habit tracking with floating blue lights and a luminous streak board.</Text>
-							</View>
-						</View>
+							<View style={styles.authFrame}>
 						<View style={styles.heroCard}>
 							<Text style={styles.kicker}>Gemini workspace</Text>
 							<Text style={styles.heroTitle}>Register once, then run the whole routine from a glowing habit cockpit.</Text>
@@ -766,6 +769,7 @@ export default function HabitApp() {
 							<Text style={styles.helperText}>Payload: userId, email, and timezone are sent to /auth/register.</Text>
 						</View>
 						{message ? <Text style={styles.statusText}>{message}</Text> : null}
+							</View>
 						</ScrollView>
 					</Animated.View>
 				</KeyboardAvoidingView>
@@ -940,7 +944,11 @@ export default function HabitApp() {
 					</View>
 
 					{habits.length ? (
-						<MasonryColumns habits={habits} selectedId={selectedHabit?.id ?? null} onSelect={setSelectedHabitId} />
+						<MasonryColumns
+							habits={habits}
+							selectedId={selectedHabitId}
+							onSelect={(habitId) => setSelectedHabitId((current) => (current === habitId ? null : habitId))}
+						/>
 					) : (
 						<View style={styles.emptyState}>
 							<View style={styles.emptyIcon}>
@@ -952,18 +960,31 @@ export default function HabitApp() {
 					)}
 
 					{selectedHabit ? (
-						<View style={styles.panel}>
-							<Text style={styles.panelTitle}>Selected habit actions</Text>
+						<View style={[styles.selectedActionsPanel, { borderColor: selectedHabit.colors[0] }]}>
+							<View style={styles.selectedActionsHeader}>
+								<View style={styles.selectedActionsTitleRow}>
+									<View style={[styles.selectedActionsIcon, { backgroundColor: selectedHabit.colors[0] }]}>
+										<LucideIcon style={styles.selectedActionsIconGlyph} name="CheckCircle2" size={16} color={GEMINI.background} strokeWidth={2.3} />
+									</View>
+									<View style={styles.selectedActionsTextBlock}>
+										<Text style={styles.panelTitle}>Selected habit actions</Text>
+										<Text style={styles.selectedActionsSubtitle}>Quick actions for {selectedHabit.title}</Text>
+									</View>
+								</View>
+								<View style={[styles.selectedActionsPill, { backgroundColor: selectedHabit.colors[0] }]}>
+									<Text style={styles.selectedActionsPillText}>{selectedHabit.completedToday ? 'Checked in' : 'Active'}</Text>
+								</View>
+							</View>
 							<View style={styles.detailActions}>
 								<MotionButton onPress={() => handleCheckIn(selectedHabit.id)} style={[styles.primaryButton, styles.flexButton]}>
-									<View style={styles.buttonRow}>
-										<LucideIcon style={styles.icon} name="CheckCircle2" size={16} color={GEMINI.background} strokeWidth={2.3} />
+									<View style={[styles.buttonRow, styles.selectedButtonRow]}>
+										<LucideIcon style={styles.selectedButtonIcon} name="CheckCircle2" size={16} color={GEMINI.background} strokeWidth={2.3} />
 										<Text style={styles.primaryButtonText}>Atomic check-in</Text>
 									</View>
 								</MotionButton>
 								<MotionButton onPress={() => handleDeleteHabit(selectedHabit.id)} style={[styles.dangerButton, styles.flexButton]}>
-									<View style={styles.buttonRow}>
-										<LucideIcon style={styles.icon} name="Trash2" size={16} color={GEMINI.text} strokeWidth={2.3} />
+									<View style={[styles.buttonRow, styles.selectedButtonRow]}>
+										<LucideIcon style={styles.selectedButtonIcon} name="Trash2" size={16} color={GEMINI.text} strokeWidth={2.3} />
 										<Text style={styles.dangerButtonText}>Delete habit</Text>
 									</View>
 								</MotionButton>
@@ -1062,6 +1083,13 @@ const styles = StyleSheet.create({
 		gap: 16,
 		flexGrow: 1,
 		justifyContent: 'center',
+		alignItems: 'center',
+	},
+	authFrame: {
+		width: '100%',
+		maxWidth: 560,
+		alignSelf: 'center',
+		gap: 16,
 	},
 	heroCard: {
 		padding: 20,
@@ -1143,6 +1171,8 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		justifyContent: 'space-between',
 		alignItems: 'center',
+		gap: 12,
+		flexWrap: 'wrap',
 	},
 	panelHint: {
 		fontSize: 12,
@@ -1162,6 +1192,7 @@ const styles = StyleSheet.create({
 		shadowOpacity: 0.2,
 		shadowRadius: 1,
 		shadowOffset: { width: 0, height: 1 },
+		width: '100%',
 	},
 	primaryButton: {
 		backgroundColor: GEMINI.accent,
@@ -1175,6 +1206,7 @@ const styles = StyleSheet.create({
 		shadowRadius: 10,
 		shadowOffset: { width: 0, height: 5 },
 		elevation: 4,
+		width: '100%',
 	},
 	primaryButtonText: {
 		color: GEMINI.background,
@@ -1230,9 +1262,20 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		justifyContent: 'center',
+		gap: 8,
+		flexWrap: 'nowrap',
 	},
 	icon: {
 		marginRight: 10,
+	},
+	selectedActionsIconGlyph: {
+		marginRight: 0,
+	},
+	selectedButtonRow: {
+		gap: 8,
+	},
+	selectedButtonIcon: {
+		marginRight: 0,
 	},
 	buttonPressed: {
 		transform: [{ translateY: 1 }],
@@ -1400,9 +1443,10 @@ const styles = StyleSheet.create({
 		transform: [{ translateY: 1 }],
 	},
 	cardSelected: {
-		borderColor: GEMINI.borderStrong,
-		shadowOpacity: 0.3,
-		backgroundColor: 'rgba(20, 34, 61, 0.98)',
+		borderWidth: 2,
+		shadowOpacity: 0.42,
+		backgroundColor: 'rgba(20, 34, 61, 0.99)',
+		transform: [{ translateY: -2 }],
 	},
 	cardAccent: {
 		height: 14,
@@ -1481,6 +1525,7 @@ const styles = StyleSheet.create({
 	detailActions: {
 		flexDirection: 'row',
 		flexWrap: 'wrap',
+		marginTop: 4,
 	},
 	flexButton: {
 		flex: 1,
@@ -1533,5 +1578,69 @@ const styles = StyleSheet.create({
 	},
 	listHeader: {
 		gap: 4,
+	},
+	selectedBadge: {
+		alignSelf: 'flex-start',
+		paddingHorizontal: 10,
+		paddingVertical: 6,
+		borderRadius: 999,
+		marginBottom: 2,
+	},
+	selectedBadgeText: {
+		color: GEMINI.background,
+		fontSize: 11,
+		fontWeight: '800',
+		textTransform: 'uppercase',
+		letterSpacing: 0.8,
+	},
+	selectedActionsPanel: {
+		padding: 16,
+		borderRadius: 26,
+		backgroundColor: GEMINI.surface,
+		borderWidth: 1,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.24,
+		shadowRadius: 14,
+		shadowOffset: { width: 0, height: 8 },
+		elevation: 4,
+		gap: 12,
+	},
+	selectedActionsHeader: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		justifyContent: 'space-between',
+		gap: 12,
+	},
+	selectedActionsTitleRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: 10,
+		flex: 1,
+	},
+	selectedActionsIcon: {
+		width: 34,
+		height: 34,
+		borderRadius: 12,
+		alignItems: 'center',
+		justifyContent: 'center',
+	},
+	selectedActionsTextBlock: {
+		flex: 1,
+	},
+	selectedActionsSubtitle: {
+		fontSize: 13,
+		lineHeight: 18,
+		color: GEMINI.muted,
+		marginTop: 3,
+	},
+	selectedActionsPill: {
+		paddingHorizontal: 10,
+		paddingVertical: 6,
+		borderRadius: 999,
+	},
+	selectedActionsPillText: {
+		color: GEMINI.background,
+		fontSize: 11,
+		fontWeight: '800',
 	},
 });
