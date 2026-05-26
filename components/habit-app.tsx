@@ -1,7 +1,11 @@
+import { Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
+    Animated,
+    Easing,
     KeyboardAvoidingView,
     Platform,
     Pressable,
@@ -10,15 +14,72 @@ import {
     StyleSheet,
     Text,
     TextInput,
-    View,
+    View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Fonts } from '@/constants/theme';
 
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 const BASE_URL = 'https://hg1iywighj.execute-api.ap-south-1.amazonaws.com';
 const SESSION_KEY = '@habitsApp/session';
 const DAILY_GRID_SIZE = 28;
+
+const GEMINI = {
+	background: '#07111F',
+	backgroundAlt: '#0B1730',
+	surface: 'rgba(13, 24, 46, 0.82)',
+	surfaceStrong: '#101E37',
+	surfaceSoft: '#152848',
+	border: 'rgba(138, 181, 255, 0.18)',
+	borderStrong: 'rgba(155, 198, 255, 0.34)',
+	text: '#F4F7FF',
+	muted: '#B5C5E6',
+	soft: '#8196C4',
+	accent: '#5AA8FF',
+	accentSoft: '#DCEAFF',
+	accentViolet: '#8A7CFF',
+	accentCyan: '#6FE3FF',
+	success: '#7EE0C6',
+	danger: '#FF7D8A',
+	glowBlue: 'rgba(68, 154, 255, 0.36)',
+	glowViolet: 'rgba(125, 93, 255, 0.24)',
+	glowCyan: 'rgba(100, 227, 255, 0.22)',
+	orbBlue: 'rgba(61, 143, 255, 0.3)',
+	orbViolet: 'rgba(112, 89, 255, 0.24)',
+	orbCyan: 'rgba(122, 226, 255, 0.18)',
+} as const;
+
+const DEFAULT_HABIT_COLORS: [string, string] = [GEMINI.accent, GEMINI.accentSoft];
+
+const ICON_MAP = {
+	CheckCircle2: 'check-circle',
+	CirclePlus: 'plus-circle',
+	Grid2x2: 'grid',
+	LayoutGrid: 'grid',
+	LogOut: 'log-out',
+	PencilLine: 'edit-3',
+	RefreshCw: 'refresh-cw',
+	Sparkles: 'star',
+	Trash2: 'trash-2',
+} as const;
+
+function LucideIcon({
+	name,
+	color,
+	size,
+	strokeWidth,
+	style,
+}: {
+	name: keyof typeof ICON_MAP;
+	color: string;
+	size: number;
+	strokeWidth: number;
+	style?: any;
+}) {
+	return <Feather name={ICON_MAP[name]} color={color} size={size} style={style} />;
+}
 
 type AuthSession = {
 	userId: string;
@@ -33,9 +94,11 @@ type ApiHabit = {
 	title?: string;
 	cardHeight?: number;
 	colors?: string[] | { primary?: string; secondary?: string };
+	streakCount?: number;
 	streak?: number;
 	progress?: number;
 	completedToday?: boolean;
+	lastCheckIn?: string | null;
 	checkedInAt?: string[];
 };
 
@@ -47,6 +110,7 @@ type Habit = {
 	streak: number;
 	progress: number;
 	completedToday: boolean;
+	lastCheckIn: string | null;
 	checkedInAt: string[];
 };
 
@@ -57,11 +121,21 @@ type HabitFormState = {
 	secondaryColor: string;
 };
 
+type FloatingOrbProps = {
+	color: string;
+	style: object;
+	duration: number;
+	translateX: number;
+	translateY: number;
+	delay?: number;
+	size: number;
+};
+
 const emptyForm = (): HabitFormState => ({
 	title: '',
 	cardHeight: '210',
-	primaryColor: '#163527',
-	secondaryColor: '#DDE8D8',
+	primaryColor: GEMINI.accent,
+	secondaryColor: GEMINI.accentSoft,
 });
 
 function getDefaultTimezone() {
@@ -107,17 +181,22 @@ function normalizeColors(value: ApiHabit['colors'], fallback: [string, string]) 
 }
 
 function normalizeHabit(habit: ApiHabit, index: number): Habit {
-	const palette: [string, string] = index % 2 === 0 ? ['#184E31', '#CDE4C8'] : ['#5B3A29', '#EEDDC5'];
+	const palette: [string, string] = index % 2 === 0 ? DEFAULT_HABIT_COLORS : [GEMINI.accentViolet, '#E6DFFF'];
 
 	return {
 		id: habit.habitId ?? habit.id ?? `habit_${index}`,
 		title: habit.title ?? 'Untitled habit',
 		cardHeight: Number(habit.cardHeight ?? 210),
 		colors: normalizeColors(habit.colors, palette),
-		streak: Number(habit.streak ?? 0),
+		streak: Number(habit.streak ?? habit.streakCount ?? 0),
 		progress: Number(habit.progress ?? 0),
-		completedToday: Boolean(habit.completedToday),
-		checkedInAt: Array.isArray(habit.checkedInAt) ? habit.checkedInAt : [],
+		completedToday: Boolean(habit.completedToday ?? habit.lastCheckIn),
+		lastCheckIn: habit.lastCheckIn ?? null,
+		checkedInAt: Array.isArray(habit.checkedInAt)
+			? habit.checkedInAt
+			: habit.lastCheckIn
+				? [habit.lastCheckIn]
+				: [],
 	};
 }
 
@@ -178,11 +257,14 @@ function MasonryColumns({
 
 function HabitCard({ habit, selected, onSelect }: { habit: Habit; selected: boolean; onSelect: () => void }) {
 	const grid = buildGridValues(habit, 14);
+	const motion = useScaleMotion(0.965);
 
 	return (
-		<Pressable
+		<AnimatedPressable
 			onPress={onSelect}
-			style={({ pressed }) => [styles.cardShell, selected && styles.cardSelected, pressed && styles.cardPressed]}
+			onPressIn={motion.onPressIn}
+			onPressOut={motion.onPressOut}
+			style={[styles.cardShell, selected && styles.cardSelected, motion.animatedStyle]}
 		>
 			<View style={[styles.cardAccent, { backgroundColor: habit.colors[0] }]} />
 			<View style={styles.cardInner}>
@@ -221,7 +303,7 @@ function HabitCard({ habit, selected, onSelect }: { habit: Habit; selected: bool
 				</View>
 				<Text style={styles.progressLabel}>{Math.max(habit.progress, habit.streak * 4)}% complete</Text>
 			</View>
-		</Pressable>
+		</AnimatedPressable>
 	);
 }
 
@@ -269,6 +351,106 @@ function GridLegend({ activeColor }: { activeColor: string }) {
 	);
 }
 
+function useScaleMotion(active = 0.97) {
+	const scale = useRef(new Animated.Value(1)).current;
+
+	const animateTo = (toValue: number) => {
+		Animated.spring(scale, {
+			toValue,
+			useNativeDriver: true,
+			bounciness: 0,
+			speed: 18,
+		}).start();
+	};
+
+	return {
+		animatedStyle: { transform: [{ scale }] },
+		onPressIn: () => animateTo(active),
+		onPressOut: () => animateTo(1),
+	};
+}
+
+function FloatingOrb({ color, style, duration, translateX, translateY, delay = 0, size }: FloatingOrbProps) {
+	const motion = useRef(new Animated.Value(0)).current;
+
+	useEffect(() => {
+		const animation = Animated.loop(
+			Animated.sequence([
+				Animated.delay(delay),
+				Animated.timing(motion, {
+					toValue: 1,
+					duration,
+					easing: Easing.inOut(Easing.sin),
+					useNativeDriver: true,
+				}),
+				Animated.timing(motion, {
+					toValue: 0,
+					duration,
+					easing: Easing.inOut(Easing.sin),
+					useNativeDriver: true,
+				}),
+			]),
+		);
+
+		animation.start();
+
+		return () => animation.stop();
+	}, [delay, duration, motion]);
+
+	return (
+		<Animated.View
+			pointerEvents="none"
+			style={[
+				styles.orb,
+				style,
+				{
+					width: size,
+					height: size,
+					borderRadius: size / 2,
+					backgroundColor: color,
+					opacity: motion.interpolate({ inputRange: [0, 1], outputRange: [0.52, 0.88] }),
+					transform: [
+						{ translateX: motion.interpolate({ inputRange: [0, 1], outputRange: [0, translateX] }) },
+						{ translateY: motion.interpolate({ inputRange: [0, 1], outputRange: [0, translateY] }) },
+						{ scale: motion.interpolate({ inputRange: [0, 1], outputRange: [1, 1.08] }) },
+					],
+				},
+			]}
+		/>
+	);
+}
+
+function GeminiBackdrop() {
+	return (
+		<View pointerEvents="none" style={styles.backdropLayer}>
+			<FloatingOrb color={GEMINI.orbBlue} style={styles.orbTopRight} duration={6200} translateX={-18} translateY={22} size={240} />
+			<FloatingOrb color={GEMINI.orbViolet} style={styles.orbTopLeft} duration={7400} translateX={16} translateY={-18} delay={300} size={190} />
+			<FloatingOrb color={GEMINI.orbCyan} style={styles.orbBottom} duration={6800} translateX={-10} translateY={-16} delay={900} size={210} />
+			<View style={styles.backdropWash} />
+		</View>
+	);
+}
+
+function MotionButton({
+	onPress,
+	style,
+	children,
+	pressedScale = 0.98,
+	}: {
+	onPress?: () => void;
+	style: any;
+	children: ReactNode;
+	pressedScale?: number;
+}) {
+	const motion = useScaleMotion(pressedScale);
+
+	return (
+		<AnimatedPressable onPress={onPress} onPressIn={motion.onPressIn} onPressOut={motion.onPressOut} style={[style, motion.animatedStyle]}>
+			{children}
+		</AnimatedPressable>
+	);
+}
+
 export default function HabitApp() {
 	const [session, setSession] = useState<AuthSession | null>(null);
 	const [habits, setHabits] = useState<Habit[]>([]);
@@ -276,16 +458,18 @@ export default function HabitApp() {
 	const [loading, setLoading] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 	const [message, setMessage] = useState('');
+	const [transitioning, setTransitioning] = useState(false);
 	const [authForm, setAuthForm] = useState({
 		email: 'dev@example.com',
 		timezone: getDefaultTimezone(),
 	});
 	const [form, setForm] = useState<HabitFormState>(emptyForm());
 	const [editingId, setEditingId] = useState<string | null>(null);
+	const screenMotion = useRef(new Animated.Value(0)).current;
 
 	useEffect(() => {
 		void bootstrap();
-	}, []);
+	}, [bootstrap]);
 
 	useEffect(() => {
 		if (!session) {
@@ -295,25 +479,36 @@ export default function HabitApp() {
 		void syncHabits(session);
 	}, [session]);
 
+	useEffect(() => {
+		Animated.timing(screenMotion, {
+			toValue: session ? 1 : 0,
+			duration: 420,
+			easing: Easing.out(Easing.cubic),
+			useNativeDriver: true,
+		}).start();
+	}, [screenMotion, session]);
+
 	const selectedHabit = habits.find((habit) => habit.id === selectedHabitId) ?? habits[0] ?? null;
 	const activeTodayCount = habits.filter((habit) => habit.completedToday).length;
 	const averageStreak = habits.length
 		? Math.round(habits.reduce((total, habit) => total + habit.streak, 0) / habits.length)
 		: 0;
 
-	async function bootstrap() {
+	const bootstrap = useCallback(async () => {
 		try {
 			const stored = await AsyncStorage.getItem(SESSION_KEY);
 			if (stored) {
 				const parsed = JSON.parse(stored) as AuthSession;
 				setSession(parsed);
+				setTransitioning(false);
+				screenMotion.setValue(1);
 				setAuthForm({ email: parsed.email, timezone: parsed.timezone });
 				return;
 			}
 		} catch (error) {
 			console.warn('Failed to restore session', error);
 		}
-	}
+	}, [screenMotion]);
 
 	async function saveSession(nextSession: AuthSession) {
 		setSession(nextSession);
@@ -324,7 +519,7 @@ export default function HabitApp() {
 		setLoading(true);
 		setMessage('');
 		try {
-			const data = await requestJson<{ habits?: ApiHabit[]; data?: ApiHabit[]; items?: ApiHabit[] }>('/habits', {
+			const data = await requestJson<{ habits?: ApiHabit[]; data?: ApiHabit[]; items?: ApiHabit[] }>(`/habits?userId=${encodeURIComponent(currentSession.userId)}`, {
 				method: 'GET',
 				headers: {
 					Authorization: `Bearer ${currentSession.token}`,
@@ -355,6 +550,7 @@ export default function HabitApp() {
 		setLoading(true);
 		setMessage('');
 		try {
+			setTransitioning(true);
 			const response = await requestJson<Record<string, unknown>>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify(payload),
@@ -362,7 +558,9 @@ export default function HabitApp() {
 			const token = String(response.token ?? response.accessToken ?? response.authToken ?? response.userId ?? userId);
 			await saveSession({ userId, email, timezone: payload.timezone, token });
 			setMessage('Registration complete. Your habit desk is ready.');
+			setTimeout(() => setTransitioning(false), 420);
 		} catch (error) {
+			setTransitioning(false);
 			const fallbackToken = userId;
 			await saveSession({ userId, email, timezone: payload.timezone, token: fallbackToken });
 			setMessage(error instanceof Error ? error.message : 'Registration succeeded locally.');
@@ -380,11 +578,24 @@ export default function HabitApp() {
 			return;
 		}
 
-		const cardHeight = Number(form.cardHeight) || 210;
-		const payload = {
-			title: form.title.trim(),
-			cardHeight,
-			colors: [form.primaryColor.trim() || '#184E31', form.secondaryColor.trim() || '#DDE8D8'],
+		const title = form.title.trim();
+		const createPayload = {
+			userId: session.userId,
+			title,
+			cardHeight: 210,
+			colors: {
+				primary: GEMINI.accent,
+				secondary: GEMINI.accentSoft,
+			},
+		};
+		const editPayload = {
+			userId: session.userId,
+			title,
+			cardHeight: Number(form.cardHeight) || 210,
+			colors: {
+				primary: form.primaryColor.trim() || GEMINI.accent,
+				secondary: form.secondaryColor.trim() || GEMINI.accentSoft,
+			},
 		};
 
 		setLoading(true);
@@ -394,22 +605,23 @@ export default function HabitApp() {
 					method: 'PATCH',
 					headers: { Authorization: `Bearer ${session.token}` },
 					body: JSON.stringify({
-						title: payload.title,
-						cardHeight: payload.cardHeight,
-						colors: {
-							primary: payload.colors[0],
-							secondary: payload.colors[1],
-						},
+						userId: session.userId,
+						title: editPayload.title,
+						cardHeight: editPayload.cardHeight,
+						colors: editPayload.colors,
 					}),
 				});
-				setMessage(`Updated ${payload.title}.`);
+				setMessage(`Updated ${editPayload.title}.`);
 			} else {
-				await requestJson('/habits/create', {
+				const createdHabit = await requestJson<ApiHabit>('/habits/create', {
 					method: 'POST',
 					headers: { Authorization: `Bearer ${session.token}` },
-					body: JSON.stringify(payload),
+					body: JSON.stringify(createPayload),
 				});
-				setMessage(`Created ${payload.title}.`);
+				const normalizedCreatedHabit = normalizeHabit(createdHabit, 0);
+				setHabits((current) => [normalizedCreatedHabit, ...current.filter((habit) => habit.id !== normalizedCreatedHabit.id)]);
+				setSelectedHabitId(normalizedCreatedHabit.id);
+				setMessage(`Created ${title}.`);
 			}
 			setForm(emptyForm());
 			setEditingId(null);
@@ -430,7 +642,7 @@ export default function HabitApp() {
 			await requestJson('/habits/check-in', {
 				method: 'POST',
 				headers: { Authorization: `Bearer ${session.token}` },
-				body: JSON.stringify({ habitId }),
+				body: JSON.stringify({ userId: session.userId, habitId }),
 			});
 			setMessage('Check-in saved.');
 			await syncHabits(session);
@@ -483,34 +695,42 @@ export default function HabitApp() {
 	if (!session) {
 		return (
 			<SafeAreaView style={styles.screen}>
-				<View style={styles.backdrop} />
-				<View style={styles.backdropAlt} />
-				<View style={styles.backdropGlow} />
+				<GeminiBackdrop />
 				<KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-					<ScrollView contentContainerStyle={styles.authContent} showsVerticalScrollIndicator={false}>
+					<Animated.View
+						style={[
+							styles.sceneWrap,
+							{
+								opacity: screenMotion.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+								transform: [{ translateY: screenMotion.interpolate({ inputRange: [0, 1], outputRange: [0, -18] }) }],
+							},
+						]}
+						pointerEvents={transitioning ? 'none' : 'auto'}
+					>
+						<ScrollView contentContainerStyle={styles.authContent} showsVerticalScrollIndicator={false}>
 						<View style={styles.brandRow}>
 							<View style={styles.brandMark}>
-								<Text style={styles.brandMarkText}>H</Text>
+								<LucideIcon style={styles.icon} name="Sparkles" size={22} color={GEMINI.accentSoft} strokeWidth={2.4} />
 							</View>
 							<View>
 								<Text style={styles.brandName}>Habit Desk</Text>
-								<Text style={styles.brandSubtext}>Skeuomorphic habit tracking with a contribution-style streak view.</Text>
+								<Text style={styles.brandSubtext}>Gemini-inspired habit tracking with floating blue lights and a luminous streak board.</Text>
 							</View>
 						</View>
 						<View style={styles.heroCard}>
-							<Text style={styles.kicker}>Habit desk</Text>
-							<Text style={styles.heroTitle}>Register once, then run the whole routine from a tactile habit grid.</Text>
+							<Text style={styles.kicker}>Gemini workspace</Text>
+							<Text style={styles.heroTitle}>Register once, then run the whole routine from a glowing habit cockpit.</Text>
 							<Text style={styles.heroBody}>
 								The first run creates your onboarding footprint. After that, the app loads your habits, streaks, and masonry cards from the API.
 							</Text>
 							<View style={styles.legendRow}>
 								<View style={styles.legendItem}>
-									<View style={[styles.legendSwatch, { backgroundColor: '#184E31' }]} />
-									<Text style={styles.legendText}>Dense streaks</Text>
+									<View style={[styles.legendSwatch, { backgroundColor: GEMINI.accent }]} />
+									<Text style={styles.legendText}>Blue light pulse</Text>
 								</View>
 								<View style={styles.legendItem}>
 									<View style={styles.legendSwatchMuted} />
-									<Text style={styles.legendText}>Open slots</Text>
+									<Text style={styles.legendText}>Soft glow rest state</Text>
 								</View>
 							</View>
 						</View>
@@ -523,7 +743,7 @@ export default function HabitApp() {
 							</View>
 							<TextInput
 								placeholder="dev@example.com"
-								placeholderTextColor="#8F7F69"
+								placeholderTextColor={GEMINI.soft}
 								style={styles.input}
 								value={authForm.email}
 								onChangeText={(value) => setAuthForm((current) => ({ ...current, email: value }))}
@@ -532,18 +752,22 @@ export default function HabitApp() {
 							/>
 							<TextInput
 								placeholder="Asia/Kolkata"
-								placeholderTextColor="#8F7F69"
+								placeholderTextColor={GEMINI.soft}
 								style={styles.input}
 								value={authForm.timezone}
 								onChangeText={(value) => setAuthForm((current) => ({ ...current, timezone: value }))}
 							/>
-							<Pressable onPress={handleRegister} style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}>
-								<Text style={styles.primaryButtonText}>{loading ? 'Registering...' : 'Create onboarding footprint'}</Text>
-							</Pressable>
+							<MotionButton onPress={handleRegister} style={styles.primaryButton}>
+								<View style={styles.buttonRow}>
+									<LucideIcon style={styles.icon} name="CirclePlus" size={16} color={GEMINI.background} strokeWidth={2.4} />
+									<Text style={styles.primaryButtonText}>{loading ? 'Registering...' : 'Create onboarding footprint'}</Text>
+								</View>
+							</MotionButton>
 							<Text style={styles.helperText}>Payload: userId, email, and timezone are sent to /auth/register.</Text>
 						</View>
 						{message ? <Text style={styles.statusText}>{message}</Text> : null}
-					</ScrollView>
+						</ScrollView>
+					</Animated.View>
 				</KeyboardAvoidingView>
 			</SafeAreaView>
 		);
@@ -551,15 +775,22 @@ export default function HabitApp() {
 
 	return (
 		<SafeAreaView style={styles.screen}>
-			<View style={styles.backdrop} />
-			<View style={styles.backdropAlt} />
-			<View style={styles.backdropGlow} />
+				<GeminiBackdrop />
 			<KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
-				<ScrollView
-					contentContainerStyle={styles.content}
-					refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#163527" />}
-					showsVerticalScrollIndicator={false}
+				<Animated.View
+					style={[
+						styles.sceneWrap,
+						{
+							opacity: screenMotion,
+							transform: [{ translateY: screenMotion.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
+						},
+					]}
 				>
+					<ScrollView
+						contentContainerStyle={styles.content}
+						refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#D7B98D" />}
+						showsVerticalScrollIndicator={false}
+					>
 					<View style={styles.topBar}>
 						<View>
 							<Text style={styles.kicker}>Daily operating board</Text>
@@ -568,15 +799,18 @@ export default function HabitApp() {
 								{session.timezone} | {habits.length} active habits
 							</Text>
 						</View>
-						<Pressable
+						<MotionButton
 							onPress={() => {
 								setSession(null);
 								AsyncStorage.removeItem(SESSION_KEY).catch(() => undefined);
 							}}
-							style={({ pressed }) => [styles.ghostButton, pressed && styles.buttonPressed]}
+							style={styles.ghostButton}
 						>
-							<Text style={styles.ghostButtonText}>Reset</Text>
-						</Pressable>
+							<View style={styles.buttonRow}>
+								<LucideIcon style={styles.icon} name="LogOut" size={15} color={GEMINI.accentSoft} strokeWidth={2.3} />
+								<Text style={styles.ghostButtonText}>Reset</Text>
+							</View>
+						</MotionButton>
 					</View>
 
 					<View style={styles.metricRail}>
@@ -588,7 +822,7 @@ export default function HabitApp() {
 					<View style={styles.heroPanel}>
 						<View style={styles.heroPanelHeader}>
 							<View>
-								<Text style={styles.panelTitle}>GitHub-style streak grid</Text>
+								<Text style={styles.panelTitle}>Gemini streak grid</Text>
 								<Text style={styles.panelSubtitle}>Pick a card, then inspect the contribution board for that habit.</Text>
 							</View>
 							{selectedHabit ? (
@@ -607,12 +841,18 @@ export default function HabitApp() {
 								</Text>
 								<DetailGrid habit={selectedHabit} />
 								<View style={styles.detailActions}>
-									<Pressable onPress={() => handleCheckIn(selectedHabit.id)} style={({ pressed }) => [styles.primaryButton, styles.flexButton, pressed && styles.buttonPressed]}>
-										<Text style={styles.primaryButtonText}>Check in</Text>
-									</Pressable>
-									<Pressable onPress={() => startEdit(selectedHabit)} style={({ pressed }) => [styles.secondaryButton, styles.flexButton, pressed && styles.buttonPressed]}>
-										<Text style={styles.secondaryButtonText}>Edit habit</Text>
-									</Pressable>
+									<MotionButton onPress={() => handleCheckIn(selectedHabit.id)} style={[styles.primaryButton, styles.flexButton]}>
+												<View style={styles.buttonRow}>
+													<LucideIcon style={styles.icon} name="CheckCircle2" size={16} color={GEMINI.background} strokeWidth={2.3} />
+													<Text style={styles.primaryButtonText}>Check in</Text>
+												</View>
+									</MotionButton>
+									<MotionButton onPress={() => startEdit(selectedHabit)} style={[styles.secondaryButton, styles.flexButton]}>
+												<View style={styles.buttonRow}>
+													<LucideIcon style={styles.icon} name="PencilLine" size={16} color={GEMINI.accentSoft} strokeWidth={2.3} />
+													<Text style={styles.secondaryButtonText}>Edit habit</Text>
+												</View>
+									</MotionButton>
 								</View>
 							</>
 						) : (
@@ -622,65 +862,80 @@ export default function HabitApp() {
 
 					<View style={styles.panel}>
 						<Text style={styles.panelTitle}>{editingId ? 'Edit habit' : 'Create habit'}</Text>
-						<Text style={styles.panelSubtitle}>Card height controls the masonry balance; the colors set the card finish.</Text>
+						<Text style={styles.panelSubtitle}>
+							{editingId ? 'Adjust the card height and colors for this habit.' : 'Just give the habit a name to create it.'}
+						</Text>
 						<TextInput
 							placeholder="Gym"
-							placeholderTextColor="#8F7F69"
+							placeholderTextColor={GEMINI.soft}
 							style={styles.input}
 							value={form.title}
 							onChangeText={(value) => setForm((current) => ({ ...current, title: value }))}
 						/>
-						<TextInput
-							placeholder="210"
-							placeholderTextColor="#8F7F69"
-							style={styles.input}
-							value={form.cardHeight}
-							onChangeText={(value) => setForm((current) => ({ ...current, cardHeight: value }))}
-							keyboardType="numeric"
-						/>
-						<View style={styles.colorRow}>
-							<TextInput
-								placeholder="#163527"
-								placeholderTextColor="#8F7F69"
-								style={[styles.input, styles.colorInput]}
-								value={form.primaryColor}
-								onChangeText={(value) => setForm((current) => ({ ...current, primaryColor: value }))}
-								autoCapitalize="none"
-							/>
-							<TextInput
-								placeholder="#DDE8D8"
-								placeholderTextColor="#8F7F69"
-								style={[styles.input, styles.colorInput]}
-								value={form.secondaryColor}
-								onChangeText={(value) => setForm((current) => ({ ...current, secondaryColor: value }))}
-								autoCapitalize="none"
-							/>
-						</View>
+						{editingId ? (
+							<>
+								<TextInput
+									placeholder="210"
+									placeholderTextColor={GEMINI.soft}
+									style={styles.input}
+									value={form.cardHeight}
+									onChangeText={(value) => setForm((current) => ({ ...current, cardHeight: value }))}
+									keyboardType="numeric"
+								/>
+								<View style={styles.colorRow}>
+									<TextInput
+										placeholder="#5AA8FF"
+										placeholderTextColor={GEMINI.soft}
+										style={[styles.input, styles.colorInput]}
+										value={form.primaryColor}
+										onChangeText={(value) => setForm((current) => ({ ...current, primaryColor: value }))}
+										autoCapitalize="none"
+									/>
+									<TextInput
+										placeholder="#DCEAFF"
+										placeholderTextColor={GEMINI.soft}
+										style={[styles.input, styles.colorInput]}
+										value={form.secondaryColor}
+										onChangeText={(value) => setForm((current) => ({ ...current, secondaryColor: value }))}
+										autoCapitalize="none"
+									/>
+								</View>
+							</>
+						) : null}
 						<View style={styles.detailActions}>
-							<Pressable onPress={handleSubmitHabit} style={({ pressed }) => [styles.primaryButton, styles.flexButton, pressed && styles.buttonPressed]}>
-								<Text style={styles.primaryButtonText}>{editingId ? 'Save changes' : 'Add habit'}</Text>
-							</Pressable>
+							<MotionButton onPress={handleSubmitHabit} style={[styles.primaryButton, styles.flexButton]}>
+								<View style={styles.buttonRow}>
+									<LucideIcon style={styles.icon} name="CirclePlus" size={16} color={GEMINI.background} strokeWidth={2.4} />
+									<Text style={styles.primaryButtonText}>{editingId ? 'Save changes' : 'Add habit'}</Text>
+								</View>
+							</MotionButton>
 							{editingId ? (
-								<Pressable
+								<MotionButton
 									onPress={() => {
 									setEditingId(null);
 									setForm(emptyForm());
 								}}
-									style={({ pressed }) => [styles.secondaryButton, styles.flexButton, pressed && styles.buttonPressed]}
+									style={[styles.secondaryButton, styles.flexButton]}
 								>
-									<Text style={styles.secondaryButtonText}>Cancel</Text>
-								</Pressable>
+									<View style={styles.buttonRow}>
+										<LucideIcon style={styles.icon} name="RefreshCw" size={16} color={GEMINI.accentSoft} strokeWidth={2.3} />
+										<Text style={styles.secondaryButtonText}>Cancel</Text>
+									</View>
+								</MotionButton>
 							) : null}
 						</View>
 						<Text style={styles.helperText}>
-							Create uses POST /habits/create. Edit uses PATCH /habits/{'{'}habitId{'}'} with title, cardHeight, and colors.
+							Create uses POST /habits/create. Edit uses PATCH /habits/{'{'}habitId{'}'} with title, cardHeight, and colors as an object.
 						</Text>
 					</View>
 
 					{message ? <Text style={styles.statusText}>{message}</Text> : null}
 
 					<View style={styles.listHeader}>
-						<Text style={styles.panelTitle}>Habit masonry</Text>
+						<View style={styles.sectionTitleRow}>
+							<LucideIcon style={styles.icon} name="Grid2x2" size={16} color={GEMINI.accentSoft} strokeWidth={2.3} />
+							<Text style={styles.panelTitle}>Habit masonry</Text>
+						</View>
 						<Text style={styles.boardMeta}>{loading ? 'Syncing...' : 'Pull to refresh from the API'}</Text>
 					</View>
 
@@ -689,7 +944,7 @@ export default function HabitApp() {
 					) : (
 						<View style={styles.emptyState}>
 							<View style={styles.emptyIcon}>
-								<Text style={styles.emptyIconText}>+</Text>
+								<LucideIcon style={styles.icon} name="LayoutGrid" size={22} color={GEMINI.accentSoft} strokeWidth={2.2} />
 							</View>
 							<Text style={styles.emptyTitle}>No habits yet</Text>
 							<Text style={styles.emptyBody}>Use the create form above to add your first card, then check in to grow the grid.</Text>
@@ -700,16 +955,23 @@ export default function HabitApp() {
 						<View style={styles.panel}>
 							<Text style={styles.panelTitle}>Selected habit actions</Text>
 							<View style={styles.detailActions}>
-								<Pressable onPress={() => handleCheckIn(selectedHabit.id)} style={({ pressed }) => [styles.primaryButton, styles.flexButton, pressed && styles.buttonPressed]}>
-									<Text style={styles.primaryButtonText}>Atomic check-in</Text>
-								</Pressable>
-								<Pressable onPress={() => handleDeleteHabit(selectedHabit.id)} style={({ pressed }) => [styles.dangerButton, styles.flexButton, pressed && styles.buttonPressed]}>
-									<Text style={styles.dangerButtonText}>Delete habit</Text>
-								</Pressable>
+								<MotionButton onPress={() => handleCheckIn(selectedHabit.id)} style={[styles.primaryButton, styles.flexButton]}>
+									<View style={styles.buttonRow}>
+										<LucideIcon style={styles.icon} name="CheckCircle2" size={16} color={GEMINI.background} strokeWidth={2.3} />
+										<Text style={styles.primaryButtonText}>Atomic check-in</Text>
+									</View>
+								</MotionButton>
+								<MotionButton onPress={() => handleDeleteHabit(selectedHabit.id)} style={[styles.dangerButton, styles.flexButton]}>
+									<View style={styles.buttonRow}>
+										<LucideIcon style={styles.icon} name="Trash2" size={16} color={GEMINI.text} strokeWidth={2.3} />
+										<Text style={styles.dangerButtonText}>Delete habit</Text>
+									</View>
+								</MotionButton>
 							</View>
 						</View>
 					) : null}
-				</ScrollView>
+					</ScrollView>
+				</Animated.View>
 			</KeyboardAvoidingView>
 		</SafeAreaView>
 	);
@@ -718,40 +980,37 @@ export default function HabitApp() {
 const styles = StyleSheet.create({
 	screen: {
 		flex: 1,
-		backgroundColor: '#E6DDCF',
+		backgroundColor: GEMINI.background,
 	},
 	flex: {
 		flex: 1,
 	},
-	backdrop: {
-		position: 'absolute',
-		top: -80,
-		right: -80,
-		width: 240,
-		height: 240,
-		borderRadius: 120,
-		backgroundColor: '#D3E3D0',
-		opacity: 0.95,
+	backdropLayer: {
+		...StyleSheet.absoluteFillObject,
+		overflow: 'hidden',
 	},
-	backdropAlt: {
+	orb: {
 		position: 'absolute',
-		left: -70,
-		bottom: 160,
-		width: 180,
-		height: 180,
-		borderRadius: 90,
-		backgroundColor: '#D9C2A3',
-		opacity: 0.55,
+		shadowOpacity: 0.6,
+		shadowOffset: { width: 0, height: 18 },
+		shadowRadius: 34,
+		elevation: 14,
 	},
-	backdropGlow: {
-		position: 'absolute',
-		left: '15%',
-		top: '18%',
-		width: 220,
-		height: 220,
-		borderRadius: 110,
-		backgroundColor: '#F7EBCB',
-		opacity: 0.18,
+	orbTopRight: {
+		top: -50,
+		right: -40,
+	},
+	orbTopLeft: {
+		top: 130,
+		left: -55,
+	},
+	orbBottom: {
+		bottom: 60,
+		right: '12%',
+	},
+	backdropWash: {
+		...StyleSheet.absoluteFillObject,
+		backgroundColor: 'rgba(7, 17, 31, 0.48)',
 	},
 	brandRow: {
 		flexDirection: 'row',
@@ -764,30 +1023,33 @@ const styles = StyleSheet.create({
 		borderRadius: 16,
 		alignItems: 'center',
 		justifyContent: 'center',
-		backgroundColor: '#183D2D',
+		backgroundColor: GEMINI.surfaceSoft,
 		borderWidth: 1,
-		borderColor: '#0D241B',
-		shadowColor: '#122017',
-		shadowOpacity: 0.25,
+		borderColor: GEMINI.borderStrong,
+		shadowColor: GEMINI.glowBlue,
+		shadowOpacity: 0.45,
 		shadowRadius: 10,
 		shadowOffset: { width: 0, height: 6 },
 		elevation: 4,
 	},
 	brandMarkText: {
-		color: '#F6F2E7',
+		color: GEMINI.accentSoft,
 		fontSize: 22,
 		fontFamily: Fonts.rounded,
 	},
 	brandName: {
 		fontSize: 18,
 		fontFamily: Fonts.rounded,
-		color: '#1B2B21',
+		color: GEMINI.text,
 	},
 	brandSubtext: {
 		fontSize: 13,
 		lineHeight: 18,
-		color: '#6B5F50',
+		color: GEMINI.muted,
 		marginTop: 2,
+	},
+	sceneWrap: {
+		flex: 1,
 	},
 	content: {
 		padding: 20,
@@ -804,27 +1066,27 @@ const styles = StyleSheet.create({
 	heroCard: {
 		padding: 20,
 		borderRadius: 28,
-		backgroundColor: '#F6F0E5',
+		backgroundColor: GEMINI.surface,
 		borderWidth: 1,
-		borderColor: '#D0C0AA',
-		shadowColor: '#3D2B1F',
-		shadowOpacity: 0.18,
+		borderColor: GEMINI.border,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.5,
 		shadowRadius: 20,
 		shadowOffset: { width: 0, height: 14 },
-		elevation: 8,
+		elevation: 10,
 		gap: 12,
 	},
 	heroTitle: {
 		fontSize: 31,
 		lineHeight: 37,
 		fontFamily: Fonts.rounded,
-		color: '#1D2D22',
+		color: GEMINI.text,
 		marginTop: 6,
 	},
 	heroBody: {
 		fontSize: 15,
 		lineHeight: 22,
-		color: '#5E5447',
+		color: GEMINI.muted,
 		marginTop: 12,
 	},
 	kicker: {
@@ -832,32 +1094,32 @@ const styles = StyleSheet.create({
 		textTransform: 'uppercase',
 		letterSpacing: 2,
 		fontWeight: '700',
-		color: '#6A7D61',
+		color: GEMINI.accentCyan,
 	},
 	panel: {
 		padding: 18,
 		borderRadius: 26,
-		backgroundColor: '#F7F1E4',
+		backgroundColor: GEMINI.surface,
 		borderWidth: 1,
-		borderColor: '#CDBFAF',
-		shadowColor: '#3D2B1F',
-		shadowOpacity: 0.16,
+		borderColor: GEMINI.border,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.46,
 		shadowRadius: 14,
 		shadowOffset: { width: 0, height: 10 },
-		elevation: 5,
+		elevation: 7,
 		gap: 12,
 	},
 	heroPanel: {
 		padding: 18,
 		borderRadius: 28,
-		backgroundColor: '#F6EEE0',
+		backgroundColor: GEMINI.surface,
 		borderWidth: 1,
-		borderColor: '#CDBFAF',
-		shadowColor: '#3D2B1F',
-		shadowOpacity: 0.14,
+		borderColor: GEMINI.border,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.48,
 		shadowRadius: 16,
 		shadowOffset: { width: 0, height: 10 },
-		elevation: 5,
+		elevation: 7,
 		gap: 12,
 	},
 	heroPanelHeader: {
@@ -869,12 +1131,12 @@ const styles = StyleSheet.create({
 	panelTitle: {
 		fontSize: 18,
 		fontFamily: Fonts.rounded,
-		color: '#1F3125',
+		color: GEMINI.text,
 	},
 	panelSubtitle: {
 		fontSize: 14,
 		lineHeight: 20,
-		color: '#6A5D4E',
+		color: GEMINI.muted,
 		marginTop: 4,
 	},
 	panelHintRow: {
@@ -884,43 +1146,45 @@ const styles = StyleSheet.create({
 	},
 	panelHint: {
 		fontSize: 12,
-		color: '#736657',
+		color: GEMINI.soft,
 		fontWeight: '700',
 	},
 	input: {
 		borderWidth: 1,
-		borderColor: '#C9B9A4',
+		borderColor: GEMINI.borderStrong,
 		borderRadius: 18,
 		paddingHorizontal: 14,
 		paddingVertical: 12,
 		fontSize: 15,
-		color: '#1F3125',
-		backgroundColor: '#FCF8F1',
-		shadowColor: '#fff',
-		shadowOpacity: 0.7,
+		color: GEMINI.text,
+		backgroundColor: GEMINI.surfaceStrong,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.2,
 		shadowRadius: 1,
 		shadowOffset: { width: 0, height: 1 },
 	},
 	primaryButton: {
-		backgroundColor: '#183D2D',
+		backgroundColor: GEMINI.accent,
 		borderRadius: 18,
 		paddingVertical: 14,
 		paddingHorizontal: 16,
 		alignItems: 'center',
 		justifyContent: 'center',
-		shadowColor: '#122017',
-		shadowOpacity: 0.22,
+		shadowColor: GEMINI.glowBlue,
+		shadowOpacity: 0.42,
 		shadowRadius: 10,
 		shadowOffset: { width: 0, height: 5 },
 		elevation: 4,
 	},
 	primaryButtonText: {
-		color: '#F6F2E7',
+		color: GEMINI.background,
 		fontSize: 15,
 		fontWeight: '700',
 	},
 	secondaryButton: {
-		backgroundColor: '#EADDC6',
+		backgroundColor: GEMINI.surfaceStrong,
+		borderWidth: 1,
+		borderColor: GEMINI.borderStrong,
 		borderRadius: 18,
 		paddingVertical: 14,
 		paddingHorizontal: 16,
@@ -928,12 +1192,12 @@ const styles = StyleSheet.create({
 		justifyContent: 'center',
 	},
 	secondaryButtonText: {
-		color: '#384335',
+		color: GEMINI.accentSoft,
 		fontSize: 15,
 		fontWeight: '700',
 	},
 	dangerButton: {
-		backgroundColor: '#A93A33',
+		backgroundColor: '#2D1930',
 		borderRadius: 18,
 		paddingVertical: 14,
 		paddingHorizontal: 16,
@@ -941,50 +1205,58 @@ const styles = StyleSheet.create({
 		justifyContent: 'center',
 	},
 	dangerButtonText: {
-		color: '#FFF3ED',
+		color: GEMINI.text,
 		fontSize: 15,
 		fontWeight: '700',
 	},
 	ghostButton: {
-		backgroundColor: '#EFE4D4',
+		backgroundColor: GEMINI.surfaceStrong,
 		borderRadius: 999,
 		paddingHorizontal: 16,
 		paddingVertical: 10,
 		borderWidth: 1,
-		borderColor: '#C9B9A4',
-		shadowColor: '#fff',
-		shadowOpacity: 0.55,
+		borderColor: GEMINI.borderStrong,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.24,
 		shadowRadius: 2,
 		shadowOffset: { width: 0, height: 1 },
 		elevation: 2,
 	},
 	ghostButtonText: {
-		color: '#495345',
+		color: GEMINI.accentSoft,
 		fontWeight: '700',
+	},
+	buttonRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		justifyContent: 'center',
+	},
+	icon: {
+		marginRight: 10,
 	},
 	buttonPressed: {
 		transform: [{ translateY: 1 }],
 		opacity: 0.92,
 	},
 	statusText: {
-		color: '#31523C',
+		color: GEMINI.accentSoft,
 		fontSize: 14,
 		lineHeight: 20,
 	},
 	helperText: {
-		color: '#6B5F50',
+		color: GEMINI.muted,
 		fontSize: 13,
 		lineHeight: 19,
 	},
 	boardTitle: {
 		fontSize: 22,
 		fontFamily: Fonts.rounded,
-		color: '#17231C',
+		color: GEMINI.text,
 		marginTop: 6,
 	},
 	boardMeta: {
 		fontSize: 13,
-		color: '#6C5D50',
+		color: GEMINI.muted,
 		marginTop: 4,
 	},
 	metricRail: {
@@ -995,11 +1267,11 @@ const styles = StyleSheet.create({
 		flex: 1,
 		padding: 14,
 		borderRadius: 22,
-		backgroundColor: '#F8F3E9',
+		backgroundColor: GEMINI.surface,
 		borderWidth: 1,
-		borderColor: '#D4C3AE',
-		shadowColor: '#3D2B1F',
-		shadowOpacity: 0.08,
+		borderColor: GEMINI.border,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.18,
 		shadowRadius: 10,
 		shadowOffset: { width: 0, height: 6 },
 		elevation: 3,
@@ -1009,19 +1281,19 @@ const styles = StyleSheet.create({
 		fontSize: 11,
 		textTransform: 'uppercase',
 		letterSpacing: 1.1,
-		color: '#7B6D5F',
+		color: GEMINI.soft,
 		fontWeight: '700',
 	},
 	metricValue: {
 		fontSize: 26,
 		lineHeight: 28,
 		fontFamily: Fonts.rounded,
-		color: '#17231C',
+		color: GEMINI.text,
 	},
 	metricSubtext: {
 		fontSize: 12,
 		lineHeight: 16,
-		color: '#6B5F50',
+		color: GEMINI.muted,
 	},
 	legendRow: {
 		flexDirection: 'row',
@@ -1035,29 +1307,34 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 10,
 		paddingVertical: 8,
 		borderRadius: 999,
-		backgroundColor: '#F8F2E8',
+		backgroundColor: GEMINI.surfaceSoft,
 		borderWidth: 1,
-		borderColor: '#D2C2AE',
+		borderColor: GEMINI.borderStrong,
 	},
 	legendSwatch: {
 		width: 12,
 		height: 12,
 		borderRadius: 4,
 		borderWidth: 1,
-		borderColor: 'rgba(0,0,0,0.08)',
+		borderColor: 'rgba(255,255,255,0.16)',
 	},
 	legendSwatchMuted: {
 		width: 12,
 		height: 12,
 		borderRadius: 4,
-		backgroundColor: '#E7DDCF',
+		backgroundColor: 'rgba(135, 167, 255, 0.18)',
 		borderWidth: 1,
-		borderColor: '#D4C3AE',
+		borderColor: GEMINI.borderStrong,
 	},
 	legendText: {
 		fontSize: 12,
 		fontWeight: '700',
-		color: '#5D5347',
+		color: GEMINI.text,
+	},
+	sectionTitleRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 8,
 	},
 	topBar: {
 		flexDirection: 'row',
@@ -1071,7 +1348,7 @@ const styles = StyleSheet.create({
 		borderRadius: 999,
 	},
 	pillText: {
-		color: '#F7F1E4',
+		color: GEMINI.background,
 		fontWeight: '700',
 		fontSize: 12,
 	},
@@ -1085,16 +1362,16 @@ const styles = StyleSheet.create({
 		height: 11,
 		borderRadius: 3,
 		borderWidth: 1,
-		borderColor: '#D6CBBB',
-		backgroundColor: '#F7F1E4',
+		borderColor: 'rgba(155, 198, 255, 0.2)',
+		backgroundColor: 'rgba(10, 22, 43, 0.96)',
 	},
 	gridCellMuted: {
-		backgroundColor: '#ECE3D4',
+		backgroundColor: 'rgba(99, 122, 184, 0.22)',
 	},
 	progressWrap: {
 		height: 10,
 		borderRadius: 999,
-		backgroundColor: '#E3D6C5',
+		backgroundColor: 'rgba(135, 167, 255, 0.16)',
 		overflow: 'hidden',
 	},
 	progressFill: {
@@ -1103,17 +1380,17 @@ const styles = StyleSheet.create({
 	},
 	progressLabel: {
 		fontSize: 12,
-		color: '#6D5E51',
+		color: '#BFAE98',
 		marginTop: 2,
 	},
 	cardShell: {
 		borderRadius: 28,
-		backgroundColor: '#F6EEDF',
+		backgroundColor: GEMINI.surface,
 		borderWidth: 1,
-		borderColor: '#CDBFAF',
+		borderColor: GEMINI.border,
 		overflow: 'hidden',
-		shadowColor: '#3D2B1F',
-		shadowOpacity: 0.12,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.34,
 		shadowRadius: 16,
 		shadowOffset: { width: 0, height: 8 },
 		elevation: 5,
@@ -1123,9 +1400,9 @@ const styles = StyleSheet.create({
 		transform: [{ translateY: 1 }],
 	},
 	cardSelected: {
-		borderColor: '#6A8F61',
-		shadowOpacity: 0.22,
-		backgroundColor: '#F9F3E8',
+		borderColor: GEMINI.borderStrong,
+		shadowOpacity: 0.3,
+		backgroundColor: 'rgba(20, 34, 61, 0.98)',
 	},
 	cardAccent: {
 		height: 14,
@@ -1146,25 +1423,26 @@ const styles = StyleSheet.create({
 	cardTitle: {
 		fontSize: 18,
 		fontFamily: Fonts.rounded,
-		color: '#1B2B21',
+		color: GEMINI.text,
 	},
 	cardMeta: {
 		fontSize: 13,
-		color: '#6C5D50',
+		color: GEMINI.muted,
 		marginTop: 4,
 	},
 	streakPill: {
 		borderRadius: 999,
 		paddingHorizontal: 10,
 		paddingVertical: 7,
+		backgroundColor: GEMINI.accentViolet,
 	},
 	streakPillText: {
 		fontSize: 11,
 		fontWeight: '700',
-		color: '#4D4136',
+		color: GEMINI.text,
 	},
 	streakPillTextDark: {
-		color: '#E9F1E5',
+		color: GEMINI.background,
 	},
 	detailGrid: {
 		flexDirection: 'row',
@@ -1177,11 +1455,11 @@ const styles = StyleSheet.create({
 		height: 18,
 		borderRadius: 5,
 		borderWidth: 1,
-		borderColor: '#D6CBBB',
-		backgroundColor: '#F7F1E4',
+		borderColor: 'rgba(155, 198, 255, 0.22)',
+		backgroundColor: 'rgba(10, 22, 43, 0.96)',
 	},
 	detailCellMuted: {
-		backgroundColor: '#E9DFCF',
+		backgroundColor: 'rgba(99, 122, 184, 0.22)',
 	},
 	colorRow: {
 		flexDirection: 'row',
@@ -1193,19 +1471,22 @@ const styles = StyleSheet.create({
 	detailTitle: {
 		fontSize: 24,
 		fontFamily: Fonts.rounded,
-		color: '#1E2F24',
+		color: GEMINI.text,
 	},
 	detailBody: {
 		fontSize: 14,
 		lineHeight: 20,
-		color: '#6A5D4E',
+		color: GEMINI.muted,
 	},
 	detailActions: {
 		flexDirection: 'row',
-		gap: 12,
+		flexWrap: 'wrap',
 	},
 	flexButton: {
 		flex: 1,
+		minWidth: 140,
+		marginBottom: 8,
+		marginRight: 8,
 	},
 	masonryRow: {
 		flexDirection: 'row',
@@ -1218,13 +1499,13 @@ const styles = StyleSheet.create({
 	emptyState: {
 		padding: 24,
 		borderRadius: 24,
-		backgroundColor: '#F7F1E4',
+		backgroundColor: GEMINI.surface,
 		borderWidth: 1,
-		borderColor: '#CDBFAF',
+		borderColor: GEMINI.border,
 		alignItems: 'center',
 		gap: 8,
-		shadowColor: '#3D2B1F',
-		shadowOpacity: 0.08,
+		shadowColor: GEMINI.background,
+		shadowOpacity: 0.24,
 		shadowRadius: 12,
 		shadowOffset: { width: 0, height: 8 },
 		elevation: 3,
@@ -1235,25 +1516,19 @@ const styles = StyleSheet.create({
 		borderRadius: 16,
 		alignItems: 'center',
 		justifyContent: 'center',
-		backgroundColor: '#183D2D',
+		backgroundColor: GEMINI.surfaceSoft,
 		borderWidth: 1,
-		borderColor: '#102319',
-	},
-	emptyIconText: {
-		color: '#F6F2E7',
-		fontSize: 26,
-		fontFamily: Fonts.rounded,
-		marginTop: -2,
+		borderColor: GEMINI.borderStrong,
 	},
 	emptyTitle: {
 		fontSize: 18,
 		fontFamily: Fonts.rounded,
-		color: '#1E2F24',
+		color: GEMINI.text,
 	},
 	emptyBody: {
 		fontSize: 14,
 		lineHeight: 20,
-		color: '#6A5D4E',
+		color: GEMINI.muted,
 		textAlign: 'center',
 	},
 	listHeader: {
