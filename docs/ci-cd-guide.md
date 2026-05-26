@@ -1,56 +1,45 @@
-# CI/CD Guide: Build APK + GitHub Release
+# CI/CD Guide: Build APK + GitHub Release (No EAS)
 
-This repo is now configured with:
-- EAS build profiles in `eas.json`
-- GitHub Actions workflow in `.github/workflows/android-apk-release.yml`
+This repository now uses a pure GitHub Actions pipeline:
+- Workflow file: `.github/workflows/android-apk-release.yml`
+- Build method: `expo prebuild` + Gradle `assembleRelease`
+- Release method: GitHub Release attachment
 
-## What this pipeline does
+## What the pipeline does
 
-1. Runs on tag push like `v1.0.0` (or manually via workflow dispatch)
-2. Builds an Android APK using EAS profile `preview`
-3. Downloads the APK artifact from EAS
-4. Creates/updates a GitHub Release and uploads the APK
+1. Triggers on tag push like `v1.0.0` (or manually via workflow dispatch).
+2. Generates Android native project in CI using `npx expo prebuild --platform android`.
+3. Builds APK in CI using Gradle: `android/app/build/outputs/apk/release/app-release.apk`.
+4. Publishes a GitHub Release and uploads the APK.
 
-## One-time setup (required)
+## One-time setup
 
-1. Install and login to Expo locally:
-   - `npm install -g eas-cli`
-   - `eas login`
+1. Ensure your repository has Actions enabled.
+2. Ensure code is pushed to your GitHub default branch.
+3. No Expo/EAS token is required for this workflow.
 
-2. Link this project to EAS (if not already linked):
-   - `eas init`
+## How to trigger release
 
-3. Commit the EAS project linkage if prompted in `app.json`.
+### Option A: Tag push (recommended)
 
-4. In GitHub repo settings, add secret:
-   - Name: `EXPO_TOKEN`
-   - Value: token from `https://expo.dev/accounts/<your-account>/settings/access-tokens`
-
-## How to trigger the pipeline
-
-### Option A: Automatic on tag push
-
-1. Commit and push your changes.
-2. Create and push a tag:
-   - `git tag v1.0.0`
-   - `git push origin v1.0.0`
-
-The workflow will start automatically and publish a GitHub Release for `v1.0.0`.
+1. Commit your changes.
+2. Create and push a version tag:
+   - `git tag v1.0.1`
+   - `git push origin v1.0.1`
 
 ### Option B: Manual run
 
-1. Open GitHub -> Actions -> `Build Android APK and Release`
-2. Click `Run workflow`
-3. Enter `release_tag` (example: `v1.0.1`)
+1. Open GitHub -> Actions -> `Build Android APK and Release`.
+2. Click `Run workflow`.
+3. Enter a `release_tag` like `v1.0.2`.
 
-## Where to find the APK
+## Where to get the APK
 
-- GitHub: Releases page (APK attached to the release)
-- GitHub Actions: workflow run artifacts/logs
-- EAS dashboard: build details and history
+1. GitHub -> Releases -> open the release tag.
+2. Download the attached file: `habitsapp-<tag>.apk`.
 
-## Notes
+## Common issues
 
-- `preview` profile builds APK (`android.buildType = "apk"`).
-- `production` profile in `eas.json` is configured for app bundle (`aab`).
-- If workflow fails with token/auth errors, verify `EXPO_TOKEN` and EAS project linkage.
+1. Gradle build fails: check Java/Android logs in Actions run.
+2. `app-release.apk` missing: verify `expo prebuild` and Gradle step both succeeded.
+3. Release not created: confirm workflow has `contents: write` permission (already set in workflow).
